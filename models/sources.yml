@@ -1,0 +1,803 @@
+version: 2
+
+sources:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  #  salesforce
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: sfdc
+    description: >
+      raw salesforce crm data loaded by the etl team into l2c_raw.sfdc.
+      covers the demand side of lead-to-cash — leads, accounts, opportunities,
+      products, and pipeline history.
+    database: l2c_raw
+    schema:   sfdc
+
+    tables:
+
+      - name: sf_user
+        description: >
+          salesforce users — sdrs, account executives, channel managers,
+          and sales leadership. used to resolve owner ids on leads and
+          opportunities to human-readable names and regions.
+        columns:
+          - name: id
+            description: salesforce user id (pk)
+            tests: [not_null, unique]
+          - name: name
+            description: full name
+          - name: title
+            description: job title — sdr, account executive, channel manager etc.
+          - name: managerid
+            description: fk to sf_user — direct manager
+          - name: region__c
+            description: custom field — sales region (north america | emea | apac | global)
+          - name: meta_key
+            description: etl-generated uuid for this row version
+            tests: [not_null, unique]
+          - name: meta_src
+            description: source system tag — always sfdc for this table
+          - name: meta_load_dt
+            description: timestamp when etl loaded this row
+          - name: meta_effective_from
+            description: date this record version became active in source
+          - name: meta_effective_to
+            description: date this record version expired — null if still current
+          - name: meta_is_current
+            description: "'true' for the current version of each record"
+
+      - name: sf_product2
+        description: >
+          salesforce product catalogue. maps to sap material master via
+          productcode = sap matnr. covers machinery, spare parts, and services.
+        columns:
+          - name: id
+            description: salesforce product id (pk)
+            tests: [not_null, unique]
+          - name: name
+            description: product display name
+          - name: productcode
+            description: product code — joins to sap_mara.matnr
+            tests: [not_null]
+          - name: family
+            description: product family — machinery | spare parts | services
+          - name: isactive
+            description: whether product is active in the catalogue
+          - name: listprice
+            description: list price in usd (raw varchar — cast to number in bronze)
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_lead
+        description: >
+          salesforce leads — top of the l2c funnel. tracks inbound interest
+          from prospect companies before qualification. converted leads link
+          to account, contact and opportunity via convertedaccountid,
+          convertedopportunityid.
+        columns:
+          - name: id
+            description: salesforce lead id (pk)
+            tests: [not_null, unique]
+          - name: firstname
+          - name: lastname
+          - name: company
+            description: prospect company name
+          - name: title
+            description: job title of the contact
+          - name: leadsource
+            description: >
+              lead acquisition channel —
+              trade show | web inbound | cold outreach | partner referral |
+              marketing campaign
+          - name: industry
+            description: industry of the prospect
+          - name: status
+            description: lead status — new | working | converted | dead
+          - name: ownerid
+            description: fk to sf_user — sdr who owns the lead
+          - name: isconverted
+            description: "'true' if lead has been converted to account + opportunity"
+          - name: converteddate
+            description: date lead was converted — null if not yet converted
+          - name: convertedaccountid
+            description: fk to sf_account — created at conversion
+          - name: convertedopportunityid
+            description: fk to sf_opportunity — created at conversion
+          - name: createddate
+            description: date lead entered salesforce
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_account
+        description: >
+          salesforce accounts — qualified customer and partner companies.
+          contains the cross-system join key sap_customer_number__c which
+          links to sap_kna1.kunnr.
+        columns:
+          - name: id
+            description: salesforce account id (pk)
+            tests: [not_null, unique]
+          - name: name
+            description: company name
+          - name: type
+            description: account type — customer | partner | prospect
+          - name: industry
+          - name: annualrevenue
+            description: annual revenue in usd (raw varchar — cast in bronze)
+          - name: billingcountry
+            description: iso 2-letter country code
+          - name: billingregion
+            description: sales region — north america | emea | apac
+          - name: ownerid
+            description: fk to sf_user — account executive owner
+          - name: sap_customer_number__c
+            description: >
+              custom field — sap customer number (kunnr).
+              primary cross-system join key between salesforce and sap.
+            tests: [not_null]
+          - name: channel_tier__c
+            description: partner channel tier — gold | silver | bronze (blank for direct customers)
+          - name: createddate
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_contact
+        description: >
+          salesforce contacts — individual people at customer accounts.
+          created at lead conversion. used for relationship tracking and
+          email communication.
+        columns:
+          - name: id
+            description: salesforce contact id (pk)
+            tests: [not_null, unique]
+          - name: firstname
+          - name: lastname
+          - name: title
+          - name: email
+          - name: accountid
+            description: fk to sf_account
+            tests: [not_null]
+          - name: ownerid
+            description: fk to sf_user
+          - name: createddate
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_opportunity
+        description: >
+          salesforce opportunities — active and historical deals.
+          sap_sales_order__c links closed won opportunities to sap vbak
+          (via vbak.ihrez) — the primary handoff between salesforce and sap.
+          deal_type__c distinguishes direct vs channel selling motion.
+        columns:
+          - name: id
+            description: salesforce opportunity id (pk)
+            tests: [not_null, unique]
+          - name: name
+            description: opportunity name
+          - name: accountid
+            description: fk to sf_account — end customer
+            tests: [not_null]
+          - name: partner_account__c
+            description: fk to sf_account — channel partner (null for direct deals)
+          - name: deal_type__c
+            description: selling motion — direct | channel
+          - name: ownerid
+            description: fk to sf_user — account executive
+          - name: stagename
+            description: >
+              pipeline stage —
+              prospecting | qualification | proposal | negotiation |
+              closed won | closed lost
+          - name: amount
+            description: expected deal value in usd (raw varchar — cast in bronze)
+          - name: closedate
+            description: actual or expected close date
+          - name: probability
+            description: win probability 0-100 (raw varchar — cast in bronze)
+          - name: forecastcategory
+            description: forecast bucket — pipeline | best case | commit | closed | omitted
+          - name: leadsource
+            description: original lead source — inherited from converted lead
+          - name: partner_discount__c
+            description: channel partner discount % (0.0 for direct deals)
+          - name: sap_sales_order__c
+            description: >
+              custom field — sap sales order number (vbak.vbeln).
+              set by rep when deal is closed won and order is created in sap.
+              primary handoff key between salesforce and sap.
+          - name: createddate
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_opportunity_history
+        description: >
+          salesforce opportunity stage history — one row per stage transition
+          per opportunity. enables pipeline velocity analysis, stage conversion
+          rates, and point-in-time pipeline snapshots.
+        columns:
+          - name: id
+            description: history record id (pk)
+            tests: [not_null, unique]
+          - name: opportunityid
+            description: fk to sf_opportunity
+            tests: [not_null]
+          - name: stagename
+            description: stage at this point in time
+          - name: amount
+            description: deal value at this point in time
+          - name: probability
+            description: win probability at this point in time
+          - name: forecastcategory
+            description: forecast category at this point in time
+          - name: createddate
+            description: timestamp of this stage transition
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sf_opportunity_line_item
+        description: >
+          salesforce opportunity line items — products attached to an opportunity.
+          grain is one row per product per opportunity. maps to sap vbap via
+          product2.productcode = sap_mara.matnr.
+        columns:
+          - name: id
+            description: line item id (pk)
+            tests: [not_null, unique]
+          - name: opportunityid
+            description: fk to sf_opportunity
+            tests: [not_null]
+          - name: product2id
+            description: fk to sf_product2
+            tests: [not_null]
+          - name: pricebookentryid
+            description: fk to pricebook entry — determines standard vs partner pricing
+          - name: quantity
+            description: units ordered
+          - name: unitprice
+            description: negotiated price per unit (after discount)
+          - name: listprice
+            description: catalogue list price before any discount
+          - name: discount
+            description: discount applied as a decimal (0.05 = 5%)
+          - name: totalprice
+            description: unitprice × quantity
+          - name: servicedate
+            description: expected delivery / service date
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+
+  # ──────────────────────────────────────────────────────────────────────────
+  #  sap ecc 
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: sap
+    description: >
+      raw sap ecc / s4hana data loaded by the etl team into l2c_raw.sap.
+      covers the fulfilment side of lead-to-cash — sales orders, deliveries,
+      invoices, accounts receivable, and material/customer master data.
+    database: l2c_raw
+    schema:   sap
+
+    tables:
+
+      # ── material master ────────────────────────────────────────────────────
+
+      - name: sap_mara
+        description: >
+          sap general material master. one row per material number.
+          maps to salesforce sf_product2 via matnr = productcode.
+        columns:
+          - name: matnr
+            description: material number (pk) — joins to sf_product2.productcode
+            tests: [not_null, unique]
+          - name: mtart
+            description: material type — fert (finished goods) | ersa (spare parts) | dien (services)
+          - name: matkl
+            description: material group — indmach | spares | serv
+          - name: meins
+            description: base unit of measure
+          - name: erdat
+            description: record creation date in sap
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_makt
+        description: material descriptions. one row per material per language.
+        columns:
+          - name: matnr
+            description: material number — fk to sap_mara
+            tests: [not_null]
+          - name: spras
+            description: language key — en for english
+          - name: maktx
+            description: material description text
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── customer master ────────────────────────────────────────────────────
+
+      - name: sap_kna1
+        description: >
+          sap general customer data. one row per customer number.
+          maps to salesforce sf_account via
+          kunnr = sf_account.sap_customer_number__c.
+        columns:
+          - name: kunnr
+            description: >
+              customer number (pk).
+              joins to sf_account.sap_customer_number__c — the cross-system key.
+            tests: [not_null, unique]
+          - name: name1
+            description: customer name
+          - name: land1
+            description: country code (iso 2-letter)
+          - name: ort01
+            description: city / region
+          - name: kukla
+            description: customer classification
+          - name: ktokd
+            description: account group — 0001 direct customer | 0002 channel partner
+          - name: stcd1
+            description: tax number
+          - name: erdat
+            description: record creation date
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_knb1
+        description: >
+          sap customer data per company code. contains payment terms and
+          credit limit — key fields for dso and ar aging calculations.
+        columns:
+          - name: kunnr
+            description: customer number — fk to sap_kna1
+            tests: [not_null]
+          - name: bukrs
+            description: company code — 1000 for l2c
+          - name: zterm
+            description: payment terms — nt30 | nt60 | nt90
+          - name: klimk
+            description: credit limit in local currency
+          - name: skfor
+            description: total open ar balance
+          - name: nodel
+            description: deletion flag
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_knvv
+        description: >
+          sap customer sales area data. vtweg (distribution channel)
+          distinguishes direct (10) from channel (20) customers —
+          mirrors salesforce deal_type__c.
+        columns:
+          - name: kunnr
+            description: customer number — fk to sap_kna1
+            tests: [not_null]
+          - name: vkorg
+            description: sales organisation — 1000
+          - name: vtweg
+            description: distribution channel — 10 (direct) | 20 (channel)
+          - name: spart
+            description: division
+          - name: kdgrp
+            description: customer group
+          - name: waers
+            description: currency — usd
+          - name: vkbur
+            description: sales office — na01 | eu01 | ap01
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── sales orders ───────────────────────────────────────────────────────
+
+      - name: sap_vbak
+        description: >
+          sap sales order header. one row per order.
+          ihrez contains the salesforce opportunity id —
+          the primary join key between sap and salesforce post-handoff.
+          auart distinguishes order types: or (direct) vs zch (channel).
+        columns:
+          - name: vbeln
+            description: sales order number (pk)
+            tests: [not_null, unique]
+          - name: auart
+            description: order type — or (standard/direct) | zch (channel)
+          - name: kunnr
+            description: sold-to customer number — fk to sap_kna1
+            tests: [not_null]
+          - name: vkorg
+            description: sales organisation
+          - name: vtweg
+            description: distribution channel — 10 | 20
+          - name: erdat
+            description: order creation date
+          - name: audat
+            description: order date
+          - name: netwr
+            description: net order value
+          - name: waerk
+            description: currency
+          - name: vkbur
+            description: sales office
+          - name: bstnk
+            description: customer purchase order number
+          - name: ihrez
+            description: >
+              salesforce opportunity id.
+              primary cross-system join key (sap → salesforce direction).
+              matches sf_opportunity.id
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_vbap
+        description: >
+          sap sales order line items. one row per material per order.
+          maps to sf_opportunity_line_item via matnr = productcode.
+        columns:
+          - name: vbeln
+            description: sales order number — fk to sap_vbak
+            tests: [not_null]
+          - name: posnr
+            description: line item number (padded, e.g. 000010)
+          - name: matnr
+            description: material number — fk to sap_mara, joins to sf_product2.productcode
+          - name: arktx
+            description: material description on the order
+          - name: kwmeng
+            description: order quantity
+          - name: vrkme
+            description: sales unit of measure
+          - name: netpr
+            description: net price per unit
+          - name: netwr
+            description: net line value (qty × price)
+          - name: waerk
+            description: currency
+          - name: werks
+            description: plant — p001 | p002
+          - name: lgort
+            description: storage location
+          - name: lfdat
+            description: requested delivery date
+          - name: abgru
+            description: rejection reason code — blank if not rejected
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── document flow ──────────────────────────────────────────────────────
+
+      - name: sap_vbfa
+        description: >
+          sap document flow. links sales orders → deliveries → invoices.
+          vbtyp_n = 'j' means the subsequent doc is a delivery.
+          vbtyp_n = 'm' means the subsequent doc is a billing document.
+          use this table to traverse the full order fulfilment chain without
+          hardcoding joins between vbak, likp, and vbrk.
+        columns:
+          - name: vbelv
+            description: preceding document number (sales order or delivery)
+          - name: posnn
+            description: preceding item number
+          - name: vbeln
+            description: subsequent document number (delivery or invoice)
+          - name: posnv
+            description: subsequent item number
+          - name: vbtyp_n
+            description: subsequent document category — j (delivery) | m (billing)
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── deliveries ─────────────────────────────────────────────────────────
+
+      - name: sap_likp
+        description: >
+          sap delivery header. one row per delivery note.
+          wadat_ist is actual goods issue date — used for
+          order-to-delivery cycle time calculations.
+          one sales order can have multiple deliveries (partial shipments).
+        columns:
+          - name: vbeln
+            description: delivery number (pk)
+            tests: [not_null, unique]
+          - name: lfart
+            description: delivery type — lf (standard outbound delivery)
+          - name: kunnr
+            description: ship-to customer — fk to sap_kna1
+          - name: lfdat
+            description: planned delivery date
+          - name: wadat_ist
+            description: actual goods issue date — when goods left the warehouse
+          - name: vstel
+            description: shipping point
+          - name: inco1
+            description: incoterms — cif | fob | exw
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_lips
+        description: >
+          sap delivery line items. one row per material per delivery.
+          vgbel / vgpos link back to the originating sales order line.
+        columns:
+          - name: vbeln
+            description: delivery number — fk to sap_likp
+            tests: [not_null]
+          - name: posnr
+            description: delivery item number
+          - name: matnr
+            description: material number — fk to sap_mara
+          - name: lfimg
+            description: actual delivered quantity
+          - name: vrkme
+            description: unit of measure
+          - name: werks
+            description: plant
+          - name: vgbel
+            description: reference sales order number — fk to sap_vbak
+          - name: vgpos
+            description: reference sales order item — fk to sap_vbap.posnr
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── billing / invoices ─────────────────────────────────────────────────
+
+      - name: sap_vbrk
+        description: >
+          sap billing document header. one row per invoice.
+          valdt is the due date — derived from billing date + payment terms.
+          fkart = f2 is a standard invoice; g2 would be a credit memo.
+        columns:
+          - name: vbeln
+            description: billing document / invoice number (pk)
+            tests: [not_null, unique]
+          - name: fkart
+            description: billing type — f2 (invoice) | g2 (credit memo)
+          - name: kunag
+            description: sold-to customer — fk to sap_kna1
+          - name: fkdat
+            description: invoice / billing date
+          - name: netwr
+            description: net invoice value
+          - name: waerk
+            description: currency
+          - name: bukrs
+            description: company code
+          - name: rfbsk
+            description: posting status — c (posted to fi) | blank (not yet posted)
+          - name: zterm
+            description: payment terms on this invoice
+          - name: valdt
+            description: due date — billing date + payment terms days
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_vbrp
+        description: sap billing document line items. one row per material per invoice.
+        columns:
+          - name: vbeln
+            description: billing document number — fk to sap_vbrk
+            tests: [not_null]
+          - name: posnr
+            description: billing item number
+          - name: matnr
+            description: material number — fk to sap_mara
+          - name: fkimg
+            description: billed quantity
+          - name: netwr
+            description: net billed value for this line
+          - name: mwsbp
+            description: tax amount (10% of net)
+          - name: aubel
+            description: reference sales order — fk to sap_vbak
+          - name: aupos
+            description: reference sales order item — fk to sap_vbap
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      # ── accounts receivable ────────────────────────────────────────────────
+
+      - name: sap_bkpf
+        description: >
+          sap accounting document header. one row per fi posting.
+          blart = rv is an invoice posting; blart = dz is a customer payment.
+          links to invoices via xblnr = vbrk.vbeln.
+        columns:
+          - name: bukrs
+            description: company code
+          - name: belnr
+            description: accounting document number (pk with bukrs + gjahr)
+            tests: [not_null]
+          - name: gjahr
+            description: fiscal year
+          - name: bldat
+            description: document date
+          - name: budat
+            description: posting date
+          - name: blart
+            description: document type — rv (invoice posting) | dz (customer payment)
+          - name: waers
+            description: currency
+          - name: xblnr
+            description: reference number — invoice number for rv, payment ref for dz
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_bsid
+        description: >
+          sap open (unpaid) ar line items. one row per outstanding invoice.
+          faedt is the due date. augbl is blank — populated when cleared.
+          used for ar aging buckets and dso calculations.
+          union bsid + bsad = complete ar history.
+        columns:
+          - name: bukrs
+            description: company code
+          - name: kunnr
+            description: customer number — fk to sap_kna1
+          - name: belnr
+            description: accounting document number — fk to sap_bkpf
+          - name: gjahr
+            description: fiscal year
+          - name: bldat
+            description: document (invoice) date
+          - name: budat
+            description: posting date
+          - name: faedt
+            description: due date — key field for aging bucket calculation
+          - name: dmbtr
+            description: amount in local currency (usd)
+          - name: wrbtr
+            description: amount in document currency
+          - name: waers
+            description: document currency
+          - name: zterm
+            description: payment terms
+          - name: augbl
+            description: clearing document — blank for open items
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
+
+      - name: sap_bsad
+        description: >
+          sap cleared (paid) ar line items. same structure as bsid but
+          with augbl (clearing document) and augdt (clearing / payment date)
+          populated. augdt is when the customer paid — used for dso
+          calculations and payment behaviour analysis.
+        columns:
+          - name: bukrs
+          - name: kunnr
+            description: customer number — fk to sap_kna1
+          - name: belnr
+            description: accounting document number — fk to sap_bkpf
+          - name: gjahr
+          - name: bldat
+            description: invoice date
+          - name: budat
+            description: posting date
+          - name: faedt
+            description: due date
+          - name: dmbtr
+            description: invoice amount in local currency
+          - name: wrbtr
+            description: invoice amount in document currency
+          - name: waers
+          - name: zterm
+          - name: augbl
+            description: clearing document number — the payment document
+            tests: [not_null]
+          - name: augdt
+            description: clearing date — actual date payment was applied
+            tests: [not_null]
+          - name: meta_key
+            tests: [not_null, unique]
+          - name: meta_src
+          - name: meta_load_dt
+          - name: meta_effective_from
+          - name: meta_effective_to
+          - name: meta_is_current
