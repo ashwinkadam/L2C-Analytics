@@ -34,25 +34,25 @@ quoting:
   schema: false
   identifier: false
 
-models:
-  L2C_Analytics:
-    +persist_docs:
-      relation: true
-      columns: true
+# models:
+#   L2C_Analytics:
+#     +persist_docs:
+#       relation: true
+#       columns: true
 
-    bronze:
-      +tags: ["bronze"]
-      +schema: bronze
-      +materialized: view
+#     bronze:
+#       +tags: ["bronze"]
+#       +schema: bronze
+#       +materialized: view
       
-    silver:
-      +tags: ["silver"]
-      +schema: silver
-      +materialized: table
+#     silver:
+#       +tags: ["silver"]
+#       +schema: silver
+#       +materialized: table
 
-    gold:
-      +tags: ["gold"]
-      +schema: gold
-      +materialized: table
+#     gold:
+#       +tags: ["gold"]
+#       +schema: gold
+#       +materialized: table
 
 
