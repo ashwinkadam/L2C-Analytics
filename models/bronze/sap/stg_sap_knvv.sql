@@ -1,9 +1,9 @@
 -- =============================================================================
 -- stg_sap__knvv
--- Grain  : one row per customer per sales area (org + channel + division)
--- Notes  : distribution_channel maps to deal_type in SF_OPPORTUNITY
---          10 = Direct, 20 = Channel — mirrors Salesforce Deal_Type__c
+-- Layer  : Bronze
+-- Grain  : one row per customer per sales area 
 -- =============================================================================
+
 with source as (
 
     select * from {{ source('sap', 'sap_knvv') }}
@@ -15,25 +15,14 @@ renamed as (
 
     select
 
-        -- identifiers
+        -- ── identifiers ───────────────────────────────────────────────────
         kunnr                                     as customer_number,
-        vkorg                                     as sales_org,
-        vtweg                                     as distribution_channel,   
-        spart                                     as division,
 
-        -- attributes
-        kdgrp                                     as customer_group,
-        waers                                     as currency_code,
-        vkbur                                     as sales_office,           
+        -- ── sales area ────────────────────────────────────────────────────
+        vtweg                                     as distribution_channel, -- 10 = Direct | 20 = Channel
+        vkbur                                     as sales_office,          -- NA01 | EU01 | AP01
 
-        -- derived
-        case vtweg
-            when '10' then 'Direct'
-            when '20' then 'Channel'
-            else 'Unknown'
-        end                                       as deal_type,
-
-        -- meta columns (pass-through from ETL team)
+        -- ── meta ──────────────────────────────────────────────────────────
         meta_key,
         meta_src,
         meta_load_dt::timestamp_ntz               as meta_load_dt,
